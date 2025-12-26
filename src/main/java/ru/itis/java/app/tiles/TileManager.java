@@ -12,9 +12,9 @@ public class TileManager {
 
     private static final String FILE_PATH = "/environment/map/map.txt";
 
-    private final GamePanel gamePanel;
-    private final Tile[] tile;
-    private final int[][] mapTileResource;
+    protected final GamePanel gamePanel;
+    protected final Tile[] tile;
+    protected final int[][] mapTileResource;
 
     public TileManager(GamePanel gamePanel) {
         this.gamePanel = gamePanel;

@@ -17,6 +17,9 @@ public class GameProtocol {
     public static final byte TYPE_PLAYER_LEAVE = 0x07;
     public static final byte TYPE_PLAYER_DAMAGE = 0x08;
     public static final byte TYPE_PLAYER_DEATH = 0x09;
+    public static final byte TYPE_ITEM_PICKUP = 0x0A;
+    public static final byte TYPE_ITEM_REMOVE = 0x0B;
+    public static final byte TYPE_PLAYER_EXPERIENCE = 0x0C;
 
     public static final byte FLAG_POSITION = 0x01;
     public static final byte FLAG_DIRECTION = 0x02;
@@ -24,6 +27,8 @@ public class GameProtocol {
     public static final byte FLAG_LEVEL = 0x10;
     public static final byte FLAG_MAX_HEALTH = 0x20;
     public static final byte FLAG_SPRITE_NUM = 0x40;
+    public static final byte FLAG_ITEM_PICKUP = (byte) 0x80;
+    public static final byte FLAG_EXPERIENCE_UPDATE = 0x40;
 
     public static final byte DIR_UP = 0;
     public static final byte DIR_DOWN = 1;
@@ -41,6 +46,9 @@ public class GameProtocol {
     public static final int PLAYER_DAMAGE_SIZE = 14;
     public static final int PLAYER_DEATH_SIZE = 6;
     public static final int ATTACK_RANGE = 58;
+    public static final int ITEM_PICKUP_SIZE = 16;
+    public static final int ITEM_REMOVE_SIZE = 10;
+    public static final int PLAYER_EXPERIENCE_SIZE = 14;
 
     public static final int MIN_X = 0;
     public static final int MAX_X = 4800 - 48;
@@ -82,7 +90,7 @@ public class GameProtocol {
             return false;
         }
         byte type = data[offset + 1];
-        boolean typeValid = type >= TYPE_HANDSHAKE && type <= TYPE_PLAYER_DEATH;
+        boolean typeValid = type >= TYPE_HANDSHAKE && type <= TYPE_PLAYER_EXPERIENCE;
         return typeValid;
     }
 

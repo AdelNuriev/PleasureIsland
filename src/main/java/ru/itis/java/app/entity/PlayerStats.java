@@ -14,9 +14,9 @@ public class PlayerStats {
 
     public PlayerStats() {
         this.level = 1;
-        this.maxHealth = 80 + random.nextInt(41); // 80-120
+        this.maxHealth = 80 + random.nextInt(41);
         this.health = this.maxHealth;
-        this.damage = 20 + random.nextInt(11); // 20-30
+        this.damage = 20 + random.nextInt(11);
         this.experience = 0;
         this.experienceToNextLevel = LevelSystem.getExperienceForNextLevel(1);
     }

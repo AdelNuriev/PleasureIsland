@@ -9,6 +9,45 @@ public class PacketDecoder {
     public record DecodeResult(List<GamePacket> packets, int bytesProcessed, boolean hasMoreData) {
     }
 
+    private static class ByteArrayOutputStream {
+        private byte[] buffer;
+        private int size;
+
+        public ByteArrayOutputStream() {
+            this(32);
+        }
+
+        public ByteArrayOutputStream(int initialCapacity) {
+            buffer = new byte[initialCapacity];
+            size = 0;
+        }
+
+        public void write(int b) {
+            ensureCapacity(size + 1);
+            buffer[size++] = (byte) b;
+        }
+
+        public void write(byte b) {
+            ensureCapacity(size + 1);
+            buffer[size++] = b;
+        }
+
+        private void ensureCapacity(int minCapacity) {
+            if (minCapacity > buffer.length) {
+                int newCapacity = Math.max(buffer.length * 2, minCapacity);
+                byte[] newBuffer = new byte[newCapacity];
+                System.arraycopy(buffer, 0, newBuffer, 0, size);
+                buffer = newBuffer;
+            }
+        }
+
+        public byte[] toByteArray() {
+            byte[] result = new byte[size];
+            System.arraycopy(buffer, 0, result, 0, size);
+            return result;
+        }
+    }
+
     public DecodeResult decode(byte[] data, int length) {
         List<GamePacket> packets = new ArrayList<>();
         if (data == null || length <= 0) {
@@ -206,6 +245,47 @@ public class PacketDecoder {
                         packet.setAttackerId(((rawPacket[pos + 2] & 0xFF) << 8) | (rawPacket[pos + 3] & 0xFF));
                     }
                     break;
+                case GameProtocol.TYPE_ITEM_PICKUP:
+                    if (rawPacket.length >= GameProtocol.ITEM_PICKUP_SIZE) {
+                        int playerId = ((rawPacket[pos] & 0xFF) << 8) | (rawPacket[pos + 1] & 0xFF);
+                        int itemId = ((rawPacket[pos + 2] & 0xFF) << 8) | (rawPacket[pos + 3] & 0xFF);
+                        packet.setPlayerId(playerId);
+                        packet.setItemId(itemId);
+                        pos += 4;
+
+                        int typeLength = rawPacket[pos] & 0xFF;
+                        pos++;
+                        if (typeLength > 0 && pos + typeLength < rawPacket.length - 1) {
+                            byte[] typeBytes = new byte[typeLength];
+                            System.arraycopy(rawPacket, pos, typeBytes, 0, typeLength);
+                            packet.setItemType(new String(typeBytes, "UTF-8"));
+                            pos += typeLength;
+                        }
+
+                        if (pos + 4 < rawPacket.length - 1) {
+                            packet.setItemX(((rawPacket[pos] & 0xFF) << 8) | (rawPacket[pos + 1] & 0xFF));
+                            packet.setItemY(((rawPacket[pos + 2] & 0xFF) << 8) | (rawPacket[pos + 3] & 0xFF));
+                            pos += 4;
+                        }
+
+                        if (pos + 1 < rawPacket.length - 1) {
+                            packet.setExperienceGained(((rawPacket[pos] & 0xFF) << 8) | (rawPacket[pos + 1] & 0xFF));
+                        }
+                    }
+                    break;
+                case GameProtocol.TYPE_ITEM_REMOVE:
+                    if (rawPacket.length >= GameProtocol.ITEM_REMOVE_SIZE) {
+                        packet.setItemId(((rawPacket[pos] & 0xFF) << 8) | (rawPacket[pos + 1] & 0xFF));
+                    }
+                    break;
+                case GameProtocol.TYPE_PLAYER_EXPERIENCE:
+                    if (rawPacket.length >= GameProtocol.PLAYER_EXPERIENCE_SIZE) {
+                        packet.setPlayerId(((rawPacket[pos] & 0xFF) << 8) | (rawPacket[pos + 1] & 0xFF));
+                        packet.setExperience(((rawPacket[pos + 2] & 0xFF) << 8) | (rawPacket[pos + 3] & 0xFF));
+                        packet.setTotalExperience(((rawPacket[pos + 4] & 0xFF) << 8) | (rawPacket[pos + 5] & 0xFF));
+                        packet.setLevel(rawPacket[pos + 6] & 0xFF);
+                    }
+                    break;
                 case GameProtocol.TYPE_WORLD_STATE:
                     if (pos < rawPacket.length - 1) {
                         int playerCount = Math.min(rawPacket[pos] & 0xFF, GameProtocol.MAX_PLAYERS);
@@ -292,49 +372,12 @@ public class PacketDecoder {
             return packet;
         } catch (ArrayIndexOutOfBoundsException e) {
             return null;
+        } catch (Exception e) {
+            return null;
         }
     }
 
     public void reset() {
         incompleteBuffer = new byte[0];
-    }
-
-    private static class ByteArrayOutputStream {
-        private byte[] buffer;
-        private int size;
-
-        public ByteArrayOutputStream() {
-            this(32);
-        }
-
-        public ByteArrayOutputStream(int initialCapacity) {
-            buffer = new byte[initialCapacity];
-            size = 0;
-        }
-
-        public void write(int b) {
-            ensureCapacity(size + 1);
-            buffer[size++] = (byte) b;
-        }
-
-        public void write(byte b) {
-            ensureCapacity(size + 1);
-            buffer[size++] = b;
-        }
-
-        private void ensureCapacity(int minCapacity) {
-            if (minCapacity > buffer.length) {
-                int newCapacity = Math.max(buffer.length * 2, minCapacity);
-                byte[] newBuffer = new byte[newCapacity];
-                System.arraycopy(buffer, 0, newBuffer, 0, size);
-                buffer = newBuffer;
-            }
-        }
-
-        public byte[] toByteArray() {
-            byte[] result = new byte[size];
-            System.arraycopy(buffer, 0, result, 0, size);
-            return result;
-        }
     }
 }

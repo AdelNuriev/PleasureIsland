@@ -1,9 +1,9 @@
 package ru.itis.java.app.network.protocol;
 
 import ru.itis.java.app.entity.PlayerStats;
-import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.List;
 
 public class PacketEncoder {
@@ -232,70 +232,52 @@ public class PacketEncoder {
         return escapedData;
     }
 
-    public byte[] encode(GamePacket packet) throws IOException {
-        if (packet == null) {
-            throw new IllegalArgumentException("Packet cannot be null");
-        }
-        byte type = packet.getType();
-        if (type < GameProtocol.TYPE_HANDSHAKE || type > GameProtocol.TYPE_PLAYER_DEATH) {
-            throw new IOException("Invalid packet type: " + type);
-        }
-        switch (type) {
-            case GameProtocol.TYPE_HANDSHAKE:
-                return encodeHandshake(packet.getPlayerId(),
-                        new PlayerStats(packet.getLevel(), packet.getHealth(),
-                                packet.getMaxHealth(), packet.getDamage(), 0));
-            case GameProtocol.TYPE_PLAYER_UPDATE:
-                Integer x = packet.hasFlag(GameProtocol.FLAG_POSITION) ? packet.getX() : null;
-                Integer y = packet.hasFlag(GameProtocol.FLAG_POSITION) ? packet.getY() : null;
-                String dir = packet.hasFlag(GameProtocol.FLAG_DIRECTION) ?
-                        GameProtocol.byteToDirection(packet.getDirection()) : null;
-                Byte sprite = packet.hasFlag(GameProtocol.FLAG_SPRITE_NUM) ? packet.getSpriteNum() : null;
-                return encodePlayerUpdate(packet.getPlayerId(), x, y, dir, sprite);
-            case GameProtocol.TYPE_ATTACK:
-                return encodeAttack(
-                        packet.getPlayerId(),
-                        GameProtocol.byteToDirection(packet.getDirection()),
-                        packet.getAttackX(),
-                        packet.getAttackY()
-                );
-            case GameProtocol.TYPE_PLAYER_HIT:
-                return encodePlayerHit(
-                        packet.getAttackerId(),
-                        packet.getTargetId(),
-                        packet.getPushX(),
-                        packet.getPushY()
-                );
-            case GameProtocol.TYPE_WORLD_STATE:
-                return encodeWorldState(packet.getPlayersData());
-            case GameProtocol.TYPE_PLAYER_JOIN:
-                return encodePlayerJoin(
-                        packet.getPlayerId(),
-                        packet.getX(),
-                        packet.getY(),
-                        GameProtocol.byteToDirection(packet.getDirection()),
-                        new PlayerStats(packet.getLevel(), packet.getHealth(),
-                                packet.getMaxHealth(), packet.getDamage(), 0)
-                );
-            case GameProtocol.TYPE_PLAYER_LEAVE:
-                return encodePlayerLeave(packet.getPlayerId());
-            case GameProtocol.TYPE_PLAYER_DAMAGE:
-                return encodePlayerDamage(
-                        packet.getAttackerId(),
-                        packet.getTargetId(),
-                        packet.getDamage(),
-                        packet.getHealth(),
-                        packet.getMaxHealth(),
-                        packet.getLevel()
-                );
-            case GameProtocol.TYPE_PLAYER_DEATH:
-                return encodePlayerDeath(
-                        packet.getPlayerId(),
-                        packet.getAttackerId()
-                );
-            default:
-                throw new IOException("Unknown packet type: " + packet.getType());
-        }
+    public byte[] encodeItemPickup(int playerId, int itemId, String itemType, int itemX, int itemY, int experienceGained)
+            throws IOException {
+        resetStream();
+        dataStream.writeByte(GameProtocol.PACKET_START);
+        dataStream.writeByte(GameProtocol.TYPE_ITEM_PICKUP);
+        dataStream.writeByte(GameProtocol.FLAG_ITEM_PICKUP);
+        dataStream.writeShort(playerId);
+        dataStream.writeShort(itemId);
+        byte[] itemTypeBytes = itemType.getBytes("UTF-8");
+        dataStream.writeByte(Math.min(itemTypeBytes.length, 20));
+        dataStream.write(itemTypeBytes, 0, Math.min(itemTypeBytes.length, 20));
+        dataStream.writeShort(itemX);
+        dataStream.writeShort(itemY);
+        dataStream.writeShort(experienceGained);
+        dataStream.writeByte(GameProtocol.PACKET_END);
+        byte[] rawPacket = byteStream.toByteArray();
+        byte[] escapedData = escapePacketData(rawPacket);
+        return escapedData;
+    }
+
+    public byte[] encodeItemRemove(int itemId) throws IOException {
+        resetStream();
+        dataStream.writeByte(GameProtocol.PACKET_START);
+        dataStream.writeByte(GameProtocol.TYPE_ITEM_REMOVE);
+        dataStream.writeByte(0);
+        dataStream.writeShort(itemId);
+        dataStream.writeByte(GameProtocol.PACKET_END);
+        byte[] rawPacket = byteStream.toByteArray();
+        byte[] escapedData = escapePacketData(rawPacket);
+        return escapedData;
+    }
+
+    public byte[] encodePlayerExperience(int playerId, int experience, int totalExperience, int level)
+            throws IOException {
+        resetStream();
+        dataStream.writeByte(GameProtocol.PACKET_START);
+        dataStream.writeByte(GameProtocol.TYPE_PLAYER_EXPERIENCE);
+        dataStream.writeByte(GameProtocol.FLAG_EXPERIENCE_UPDATE | GameProtocol.FLAG_LEVEL);
+        dataStream.writeShort(playerId);
+        dataStream.writeShort(experience);
+        dataStream.writeShort(totalExperience);
+        dataStream.writeByte(level);
+        dataStream.writeByte(GameProtocol.PACKET_END);
+        byte[] rawPacket = byteStream.toByteArray();
+        byte[] escapedData = escapePacketData(rawPacket);
+        return escapedData;
     }
 
     private byte[] escapePacketData(byte[] rawPacket) {
@@ -332,6 +314,49 @@ public class PacketEncoder {
             dataStream.close();
             byteStream.close();
         } catch (IOException e) {
+        }
+    }
+
+    private static class ByteArrayOutputStream extends OutputStream {
+        private byte[] buffer;
+        private int size;
+
+        public ByteArrayOutputStream() {
+            this(32);
+        }
+
+        public ByteArrayOutputStream(int initialCapacity) {
+            buffer = new byte[initialCapacity];
+            size = 0;
+        }
+
+        public void write(int b) {
+            ensureCapacity(size + 1);
+            buffer[size++] = (byte) b;
+        }
+
+        public void write(byte b) {
+            ensureCapacity(size + 1);
+            buffer[size++] = b;
+        }
+
+        private void ensureCapacity(int minCapacity) {
+            if (minCapacity > buffer.length) {
+                int newCapacity = Math.max(buffer.length * 2, minCapacity);
+                byte[] newBuffer = new byte[newCapacity];
+                System.arraycopy(buffer, 0, newBuffer, 0, size);
+                buffer = newBuffer;
+            }
+        }
+
+        public byte[] toByteArray() {
+            byte[] result = new byte[size];
+            System.arraycopy(buffer, 0, result, 0, size);
+            return result;
+        }
+
+        public void reset() {
+            size = 0;
         }
     }
 }

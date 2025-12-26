@@ -29,6 +29,9 @@ public class SocketGameClient {
         void onWorldState(GamePacket packet);
         void onPlayerJoin(GamePacket packet);
         void onPlayerLeave(GamePacket packet);
+        void onItemPickup(GamePacket packet);
+        void onItemRemove(GamePacket packet);
+        void onPlayerExperience(GamePacket packet);
         void onError(String message);
         void onDisconnect();
     }
@@ -49,7 +52,7 @@ public class SocketGameClient {
 
             this.playerId = 0;
 
-            startThreads();
+            this.connected = true;
 
             Thread.sleep(100);
 
@@ -58,6 +61,12 @@ public class SocketGameClient {
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    public void startReceiving() {
+        if (connected) {
+            startThreads();
         }
     }
 
@@ -74,13 +83,6 @@ public class SocketGameClient {
                             System.out.println("[CLIENT] Connection closed by server (EOF)");
                             break;
                         }
-                        System.out.println("[CLIENT] Received " + bytesRead + " raw bytes");
-
-                        System.out.print("[CLIENT] Raw data (first 30 bytes hex): ");
-                        for (int i = 0; i < Math.min(bytesRead, 30); i++) {
-                            System.out.printf("%02X ", buffer[i] & 0xFF);
-                        }
-                        System.out.println();
 
                     } catch (SocketTimeoutException e) {
                         continue;
@@ -95,52 +97,9 @@ public class SocketGameClient {
                         receiveBuffer.write(buffer, 0, bytesRead);
                         byte[] allData = receiveBuffer.toByteArray();
 
-                        System.out.println("[CLIENT] Total buffer size after write: " + allData.length);
-
-                        boolean hasStartByte = false;
-                        for (int i = 0; i < allData.length; i++) {
-                            if ((allData[i] & 0xFF) == 0xFF) {
-                                hasStartByte = true;
-                                System.out.println("[CLIENT] Found PACKET_START at position " + i);
-                                break;
-                            }
-                        }
-                        if (!hasStartByte) {
-                            System.out.println("[CLIENT] WARNING: No PACKET_START in buffer!");
-                        }
-
                         PacketDecoder.DecodeResult result = decoder.decode(allData, allData.length);
 
-                        for (int i = 0; i < result.packets().size(); i++) {
-                            GamePacket packet = result.packets().get(i);
-                            System.out.println("[CLIENT] Packet #" + (i+1) + ": " + packet);
-                            System.out.println("  Type: " + packet.getType() +
-                                    " (0x" + String.format("%02X", packet.getType()) + ")");
-                            if (packet.isHandshake()) {
-                                System.out.println("  THIS IS A HANDSHAKE PACKET!");
-                                System.out.println("  Player ID in packet: " + packet.getPlayerId());
-
-                                System.out.println("[CLIENT] MANUALLY calling handlePacket...");
-                                handlePacket(packet);
-                            } else {
-                                handlePacket(packet);
-                            }
-                        }
-
-                        System.out.println("[CLIENT] Decoder result:");
-                        System.out.println("  - Packets found: " + result.packets().size());
-                        System.out.println("  - Bytes processed: " + result.bytesProcessed());
-                        System.out.println("  - Has more data: " + result.hasMoreData());
-
-                        for (int i = 0; i < result.packets().size(); i++) {
-                            GamePacket packet = result.packets().get(i);
-                            System.out.println("[CLIENT] Packet #" + (i+1) + ": " + packet);
-                            System.out.println("  Type: " + packet.getType() +
-                                    " (0x" + String.format("%02X", packet.getType()) + ")");
-                            if (packet.isHandshake()) {
-                                System.out.println("  THIS IS A HANDSHAKE PACKET!");
-                                System.out.println("  Player ID in packet: " + packet.getPlayerId());
-                            }
+                        for (GamePacket packet : result.packets()) {
                             handlePacket(packet);
                         }
 
@@ -151,16 +110,8 @@ public class SocketGameClient {
                                 System.arraycopy(allData, result.bytesProcessed(), newBuffer, 0, remaining);
                                 receiveBuffer.reset();
                                 receiveBuffer.write(newBuffer);
-                                System.out.println("[CLIENT] " + remaining + " bytes kept in buffer");
-
-                                System.out.print("[CLIENT] Remaining buffer (hex): ");
-                                for (int i = 0; i < Math.min(newBuffer.length, 20); i++) {
-                                    System.out.printf("%02X ", newBuffer[i] & 0xFF);
-                                }
-                                System.out.println();
                             } else {
                                 receiveBuffer.reset();
-                                System.out.println("[CLIENT] Buffer cleared");
                             }
                         }
                     }
@@ -218,6 +169,7 @@ public class SocketGameClient {
         if (packet.isHandshake()) {
             int newPlayerId = packet.getPlayerId();
             this.playerId = newPlayerId;
+            System.out.println("[CLIENT] Received handshake, playerId = " + newPlayerId);
         }
 
         try {
@@ -251,10 +203,22 @@ public class SocketGameClient {
                 case GameProtocol.TYPE_PLAYER_LEAVE:
                     packetListener.onPlayerLeave(packet);
                     break;
+                case GameProtocol.TYPE_ITEM_PICKUP:
+                    packetListener.onItemPickup(packet);
+                    break;
+                case GameProtocol.TYPE_ITEM_REMOVE:
+                    packetListener.onItemRemove(packet);
+                    break;
+                case GameProtocol.TYPE_PLAYER_EXPERIENCE:
+                    packetListener.onPlayerExperience(packet);
+                    break;
                 default:
-                    packetListener.onError("Unknown packet type: " + packetType);
+                    if (packetListener != null) {
+                        packetListener.onError("Unknown packet type: " + packetType);
+                    }
             }
         } catch (Exception e) {
+            System.err.println("[CLIENT] Error handling packet: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -292,6 +256,30 @@ public class SocketGameClient {
             }
         } catch (Exception e) {
             System.err.println("Error encoding fast update: " + e.getMessage());
+        }
+    }
+
+    public void sendItemPickup(int playerId, int itemId, String itemType, int itemX, int itemY, int experienceGained) {
+        if (!connected) return;
+        try {
+            byte[] data = encoder.encodeItemPickup(playerId, itemId, itemType, itemX, itemY, experienceGained);
+            if (data != null) {
+                sendQueue.offer(data);
+            }
+        } catch (Exception e) {
+            System.err.println("Error encoding item pickup: " + e.getMessage());
+        }
+    }
+
+    public void sendPlayerExperience(int playerId, int experience, int totalExperience, int level) {
+        if (!connected) return;
+        try {
+            byte[] data = encoder.encodePlayerExperience(playerId, experience, totalExperience, level);
+            if (data != null) {
+                sendQueue.offer(data);
+            }
+        } catch (Exception e) {
+            System.err.println("Error encoding experience update: " + e.getMessage());
         }
     }
 

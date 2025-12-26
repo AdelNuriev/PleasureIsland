@@ -9,133 +9,98 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class SocketGameServer {
-    private static final int PORT = 1234;
-    private static final int BUFFER_SIZE = 4096;
+    private final int PORT;
     private ServerSocket serverSocket;
     private ExecutorService threadPool;
     private Map<Integer, PlayerSession> sessions = new ConcurrentHashMap<>();
     private Map<Integer, PlayerState> playerStates = new ConcurrentHashMap<>();
+    private Map<Integer, ItemState> itemStates = new ConcurrentHashMap<>();
     private int nextPlayerId = 1;
     private PacketEncoder encoder = new PacketEncoder();
+    private volatile boolean running = true;
 
-    private static class PlayerState {
-        int id;
-        int x = 100, y = 100;
-        String direction = "down";
-        byte lastSpriteNum = 1;
-        PlayerStats stats;
-        long lastUpdateTime;
-        boolean isDead = false;
-        int deathTimer = 0;
-        private static final int DEATH_RESPAWN_TIME = 180;
+    private static class Rectangle {
+        private int x, y, width, height;
 
-        PlayerState(int id) {
-            this.id = id;
-            this.stats = new PlayerStats();
-            this.lastUpdateTime = System.currentTimeMillis();
-            this.isDead = false;
-            this.deathTimer = 0;
+        Rectangle(int x, int y, int width, int height) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
         }
 
-        void takeDamage(int damage) {
-            if (!stats.isAlive() || isDead) return;
-            stats.takeDamage(damage);
-            if (!stats.isAlive() && !isDead) {
-                die();
-            }
-        }
-
-        void die() {
-            isDead = true;
-            deathTimer = DEATH_RESPAWN_TIME;
-        }
-
-        void update() {
-            if (isDead && deathTimer > 0) {
-                deathTimer--;
-                if (deathTimer <= 0) {
-                    respawn();
-                }
-            }
-        }
-
-        void respawn() {
-            isDead = false;
-            stats.setHealth(stats.getMaxHealth());
-            int lostExperience = (int)(stats.getExperience() * 0.1);
-            stats.setExperience(Math.max(0, stats.getExperience() - lostExperience));
-            x = 100 + (id * 50) % 400;
-            y = 100 + (id * 30) % 300;
-        }
-
-        boolean isAlive() {
-            return stats.isAlive() && !isDead;
-        }
-
-        void addExperienceForKill(int victimLevel) {
-            int experienceGained = LevelSystem.getExperienceForKill(stats.getLevel(), victimLevel);
-            stats.addExperienceWithLevelCheck(experienceGained);
+        boolean intersects(Rectangle other) {
+            return x < other.x + other.width && x + width > other.x &&
+                    y < other.y + other.height && y + height > other.y;
         }
     }
 
-    private class PlayerSession {
-        Socket socket;
-        DataInputStream rawIn;
-        DataOutputStream rawOut;
-        PlayerState state;
-        boolean connected = true;
-        ByteArrayOutputStream messageBuffer = new ByteArrayOutputStream();
+    public SocketGameServer(int port) {
+        this.PORT = port;
+        initializeItems();
+    }
 
-        PlayerSession(Socket socket, PlayerState state) throws IOException {
-            this.socket = socket;
-            this.state = state;
-            this.rawIn = new DataInputStream(socket.getInputStream());
-            this.rawOut = new DataOutputStream(socket.getOutputStream());
-            byte[] handshakeData = encoder.encodeHandshake(state.id, state.stats);
-            rawOut.write(handshakeData);
-            rawOut.flush();
-            sendWorldState();
-            broadcastPlayerJoin(state.id, state.x, state.y, state.direction, state.stats);
-        }
+    public SocketGameServer() {
+        this(1234);
+    }
 
-        void sendRaw(byte[] data) throws IOException {
-            synchronized (rawOut) {
-                rawOut.write(data);
-                rawOut.flush();
+    private void initializeItems() {
+        itemStates.put(1, new ItemState(1, "Sword", 24 * 48, 8 * 48, 100));
+        itemStates.put(2, new ItemState(2, "Sword", 24 * 48, 10 * 48, 100));
+        itemStates.put(3, new ItemState(3, "Key", 20 * 48, 15 * 48, 25));
+        itemStates.put(4, new ItemState(4, "Door", 25 * 48, 15 * 48, 50));
+        itemStates.put(5, new ItemState(5, "Shield", 30 * 48, 10 * 48, 100));
+    }
+
+    private PlayerSession createPlayerSession(Socket socket, PlayerState state) throws IOException {
+        PlayerSession session = new PlayerSession(socket, state);
+        byte[] handshakeData = encoder.encodeHandshake(state.getId(), state.getStats());
+        session.getRawOut().write(handshakeData);
+        session.getRawOut().flush();
+        sendWorldState(session);
+        sendInitialItems(session);
+        broadcastPlayerJoin(state.getId(), state.getX(), state.getY(), state.getDirection(), state.getStats());
+        return session;
+    }
+
+    private void sendWorldState(PlayerSession session) throws IOException {
+        List<GamePacket.PlayerData> snapshot = new ArrayList<>();
+        for (PlayerState ps : playerStates.values()) {
+            GamePacket.PlayerData data = new GamePacket.PlayerData();
+            data.setId(ps.getId());
+            data.setX(ps.getX());
+            data.setY(ps.getY());
+            data.setDirection(GameProtocol.directionToByte(ps.getDirection()));
+            if (ps.isDead()) {
+                data.setHealth(0);
+            } else {
+                data.setHealth(ps.getStats().getHealth());
             }
+            data.setMaxHealth(ps.getStats().getMaxHealth());
+            data.setLevel(ps.getStats().getLevel());
+            data.setDamage(ps.getStats().getDamage());
+            data.setExperience(ps.getStats().getExperience());
+            data.setExperienceToNextLevel(ps.getStats().getExperienceToNextLevel());
+            data.setSpriteNum(ps.getLastSpriteNum());
+            data.setDead(ps.isDead());
+            snapshot.add(data);
         }
+        byte[] worldData = encoder.encodeWorldState(snapshot);
+        session.sendRaw(worldData);
+    }
 
-        void sendWorldState() throws IOException {
-            List<GamePacket.PlayerData> snapshot = new ArrayList<>();
-            for (PlayerState ps : playerStates.values()) {
-                GamePacket.PlayerData data = new GamePacket.PlayerData();
-                data.setId(ps.id);
-                data.setX(ps.x);
-                data.setY(ps.y);
-                data.setDirection(GameProtocol.directionToByte(ps.direction));
-                if (ps.isDead) {
-                    data.setHealth(0);
-                } else {
-                    data.setHealth(ps.stats.getHealth());
-                }
-                data.setMaxHealth(ps.stats.getMaxHealth());
-                data.setLevel(ps.stats.getLevel());
-                data.setDamage(ps.stats.getDamage());
-                data.setExperience(ps.stats.getExperience());
-                data.setExperienceToNextLevel(ps.stats.getExperienceToNextLevel());
-                data.setSpriteNum(ps.lastSpriteNum);
-                data.setDead(ps.isDead);
-                snapshot.add(data);
-            }
-            byte[] worldData = encoder.encodeWorldState(snapshot);
-            sendRaw(worldData);
-        }
-
-        void disconnect() {
-            connected = false;
-            try {
-                socket.close();
-            } catch (IOException e) {
+    private void sendInitialItems(PlayerSession session) throws IOException {
+        for (ItemState item : itemStates.values()) {
+            if (!item.isCollected()) {
+                byte[] itemPacket = encoder.encodeItemPickup(
+                        0,
+                        item.getId(),
+                        item.getType(),
+                        item.getX(),
+                        item.getY(),
+                        item.getExperienceReward()
+                );
+                session.sendRaw(itemPacket);
             }
         }
     }
@@ -143,13 +108,17 @@ public class SocketGameServer {
     public void start() {
         try {
             serverSocket = new ServerSocket(PORT);
+            System.out.println("Сервер запущен на порту: " + PORT);
             threadPool = Executors.newCachedThreadPool();
             new Thread(this::snapshotBroadcastLoop).start();
-            while (true) {
+            while (running) {
                 Socket clientSocket = serverSocket.accept();
                 threadPool.execute(() -> handleClient(clientSocket));
             }
         } catch (IOException e) {
+            if (running) {
+                System.err.println("Ошибка сервера на порту " + PORT + ": " + e.getMessage());
+            }
         }
     }
 
@@ -161,16 +130,16 @@ public class SocketGameServer {
                 int playerId = nextPlayerId++;
                 state = new PlayerState(playerId);
                 playerStates.put(Integer.valueOf(playerId), state);
-                session = new PlayerSession(socket, state);
+                session = createPlayerSession(socket, state);
                 sessions.put(Integer.valueOf(playerId), session);
             }
             PacketDecoder decoder = new PacketDecoder();
-            byte[] buffer = new byte[BUFFER_SIZE];
-            while (session.connected) {
-                int bytesRead = session.rawIn.read(buffer);
+            byte[] buffer = new byte[4096];
+            while (session.isConnected()) {
+                int bytesRead = session.getRawIn().read(buffer);
                 if (bytesRead == -1) break;
-                session.messageBuffer.write(buffer, 0, bytesRead);
-                byte[] receivedData = session.messageBuffer.toByteArray();
+                session.getMessageBuffer().write(buffer, 0, bytesRead);
+                byte[] receivedData = session.getMessageBuffer().toByteArray();
                 PacketDecoder.DecodeResult result = decoder.decode(receivedData, receivedData.length);
                 for (GamePacket packet : result.packets()) {
                     processPacket(session, packet);
@@ -180,10 +149,10 @@ public class SocketGameServer {
                     if (remaining > 0) {
                         byte[] newBuffer = new byte[remaining];
                         System.arraycopy(receivedData, result.bytesProcessed(), newBuffer, 0, remaining);
-                        session.messageBuffer.reset();
-                        session.messageBuffer.write(newBuffer);
+                        session.getMessageBuffer().reset();
+                        session.getMessageBuffer().write(newBuffer);
                     } else {
-                        session.messageBuffer.reset();
+                        session.getMessageBuffer().reset();
                     }
                 }
             }
@@ -192,9 +161,9 @@ public class SocketGameServer {
             if (session != null) {
                 session.disconnect();
                 if (state != null) {
-                    sessions.remove(state.id);
-                    playerStates.remove(state.id);
-                    broadcastPlayerLeave(state.id);
+                    sessions.remove(state.getId());
+                    playerStates.remove(state.getId());
+                    broadcastPlayerLeave(state.getId());
                 }
             }
         }
@@ -204,7 +173,7 @@ public class SocketGameServer {
         try {
             byte[] joinPacket = encoder.encodePlayerJoin(playerId, x, y, direction, stats);
             for (PlayerSession s : sessions.values()) {
-                if (s.state.id != playerId) {
+                if (s.getState().getId() != playerId) {
                     s.sendRaw(joinPacket);
                 }
             }
@@ -223,8 +192,8 @@ public class SocketGameServer {
     }
 
     private void processPacket(PlayerSession session, GamePacket packet) throws IOException {
-        PlayerState state = session.state;
-        if (state.isDead && packet.getType() == GameProtocol.TYPE_PLAYER_UPDATE) {
+        PlayerState state = session.getState();
+        if (state.isDead() && packet.getType() == GameProtocol.TYPE_PLAYER_UPDATE) {
             return;
         }
         switch (packet.getType()) {
@@ -233,23 +202,26 @@ public class SocketGameServer {
                     int x = packet.getX();
                     int y = packet.getY();
                     if (GameProtocol.validateCoordinates(x, y)) {
-                        state.x = x;
-                        state.y = y;
+                        state.setX(x);
+                        state.setY(y);
                     }
                 }
                 if (packet.hasFlag(GameProtocol.FLAG_DIRECTION)) {
-                    state.direction = GameProtocol.byteToDirection(packet.getDirection());
+                    state.setDirection(GameProtocol.byteToDirection(packet.getDirection()));
                 }
                 if (packet.hasFlag(GameProtocol.FLAG_SPRITE_NUM)) {
-                    state.lastSpriteNum = packet.getSpriteNum();
+                    state.setLastSpriteNum(packet.getSpriteNum());
                 }
-                state.lastUpdateTime = System.currentTimeMillis();
-                broadcastPlayerUpdate(state.id, state.x, state.y, state.direction, state.lastSpriteNum);
+                state.setLastUpdateTime(System.currentTimeMillis());
+                broadcastPlayerUpdate(state.getId(), state.getX(), state.getY(), state.getDirection(), state.getLastSpriteNum());
                 break;
             case GameProtocol.TYPE_ATTACK:
-                if (!state.isDead) {
+                if (!state.isDead()) {
                     handleAttack(state, packet);
                 }
+                break;
+            case GameProtocol.TYPE_ITEM_PICKUP:
+                handleItemPickup(state, packet);
                 break;
         }
     }
@@ -258,7 +230,7 @@ public class SocketGameServer {
         try {
             byte[] updatePacket = encoder.encodePlayerUpdate(playerId, x, y, direction, spriteNum);
             for (PlayerSession s : sessions.values()) {
-                if (s.state.id != playerId) {
+                if (s.getState().getId() != playerId) {
                     s.sendRaw(updatePacket);
                 }
             }
@@ -266,16 +238,87 @@ public class SocketGameServer {
         }
     }
 
+    private void handleItemPickup(PlayerState player, GamePacket packet) throws IOException {
+        int itemId = packet.getItemId();
+        String itemType = packet.getItemType();
+        ItemState item = itemStates.get(itemId);
+
+        if (item != null && !item.isCollected()) {
+            boolean canPickup = true;
+
+            if (item.getType().equals("Door") && player.getKeys() <= 0) {
+                canPickup = false;
+                System.out.println("Игрок " + player.getId() + " пытается открыть дверь без ключа");
+                return;
+            }
+
+            if (!canPickup) {
+                return;
+            }
+
+            item.setCollected(true);
+
+            switch (item.getType()) {
+                case "Sword":
+                    player.setSwords(player.getSwords() + 1);
+                    player.getStats().setDamage(player.getStats().getDamage() + 15);
+                    break;
+                case "Key":
+                    player.setKeys(player.getKeys() + 1);
+                    break;
+                case "Door":
+                    if (player.getKeys() > 0) {
+                        player.setKeys(player.getKeys() - 1);
+                    }
+                    break;
+                case "Shield":
+                    player.setShields(player.getShields() + 1);
+                    player.getStats().setHealth(player.getStats().getHealth() + 25);
+                    player.getStats().setMaxHealth(player.getStats().getMaxHealth() + 25);
+                    break;
+            }
+
+            player.getStats().addExperienceWithLevelCheck(item.getExperienceReward());
+
+            byte[] itemRemovePacket = encoder.encodeItemRemove(itemId);
+
+            byte[] itemPickupPacket = encoder.encodeItemPickup(
+                    player.getId(), itemId, item.getType(), item.getX(), item.getY(), item.getExperienceReward()
+            );
+
+            byte[] experiencePacket = encoder.encodePlayerExperience(
+                    player.getId(),
+                    player.getStats().getExperience(),
+                    player.getStats().getExperienceToNextLevel(),
+                    player.getStats().getLevel()
+            );
+
+            for (PlayerSession session : sessions.values()) {
+                if (session.isConnected()) {
+                    session.sendRaw(itemRemovePacket);
+
+                    if (session.getState().getId() == player.getId()) {
+                        session.sendRaw(itemPickupPacket);
+                        session.sendRaw(experiencePacket);
+                    }
+                }
+            }
+
+            System.out.println("Игрок " + player.getId() + " подобрал " + item.getType() +
+                    " (ID: " + itemId + "), опыт: " + item.getExperienceReward());
+        }
+    }
+
     private void handleAttack(PlayerState attacker, GamePacket packet) throws IOException {
         byte[] attackPacket = encoder.encodeAttack(
-                attacker.id,
+                attacker.getId(),
                 GameProtocol.byteToDirection(packet.getDirection()),
-                attacker.x,
-                attacker.y
+                attacker.getX(),
+                attacker.getY()
         );
 
         for (PlayerSession session : sessions.values()) {
-            if (session.connected && session.state != null) {
+            if (session.isConnected() && session.getState() != null) {
                 try {
                     session.sendRaw(attackPacket);
                 } catch (IOException e) {
@@ -284,31 +327,31 @@ public class SocketGameServer {
         }
 
         for (PlayerState target : playerStates.values()) {
-            if (target.id == attacker.id || target.isDead || !target.stats.isAlive()) {
+            if (target.getId() == attacker.getId() || target.isDead() || !target.getStats().isAlive()) {
                 continue;
             }
 
-            int attackX = attacker.x + 24;
-            int attackY = attacker.y + 24;
+            int attackX = attacker.getX() + 24;
+            int attackY = attacker.getY() + 24;
             Rectangle attackZone = calculateAttackZone(attackX, attackY,
                     GameProtocol.byteToDirection(packet.getDirection()));
-            Rectangle targetBounds = new Rectangle(target.x, target.y, 48, 48);
+            Rectangle targetBounds = new Rectangle(target.getX(), target.getY(), 48, 48);
 
             if (attackZone.intersects(targetBounds)) {
-                int damage = attacker.stats.getDamage();
+                int damage = attacker.getStats().getDamage();
                 target.takeDamage(damage);
 
                 byte[] damagePacket = encoder.encodePlayerDamage(
-                        attacker.id,
-                        target.id,
+                        attacker.getId(),
+                        target.getId(),
                         damage,
-                        target.isDead ? 0 : target.stats.getHealth(),
-                        target.stats.getMaxHealth(),
-                        target.stats.getLevel()
+                        target.isDead() ? 0 : target.getStats().getHealth(),
+                        target.getStats().getMaxHealth(),
+                        target.getStats().getLevel()
                 );
 
                 for (PlayerSession session : sessions.values()) {
-                    if (session.connected && session.state != null) {
+                    if (session.isConnected() && session.getState() != null) {
                         try {
                             session.sendRaw(damagePacket);
                         } catch (IOException e) {
@@ -317,11 +360,11 @@ public class SocketGameServer {
                 }
 
                 if (!target.isAlive()) {
-                    attacker.addExperienceForKill(target.stats.getLevel());
+                    attacker.addExperienceForKill(target.getStats().getLevel());
 
-                    byte[] deathPacket = encoder.encodePlayerDeath(target.id, attacker.id);
+                    byte[] deathPacket = encoder.encodePlayerDeath(target.getId(), attacker.getId());
                     for (PlayerSession session : sessions.values()) {
-                        if (session.connected && session.state != null) {
+                        if (session.isConnected() && session.getState() != null) {
                             try {
                                 session.sendRaw(deathPacket);
                             } catch (IOException e) {
@@ -330,23 +373,36 @@ public class SocketGameServer {
                     }
 
                     sendWorldStateToAll();
-                    handlePlayerDeath(target.id, attacker.id);
+                    handlePlayerDeath(target.getId(), attacker.getId());
+
+                    byte[] experiencePacket = encoder.encodePlayerExperience(
+                            attacker.getId(),
+                            attacker.getStats().getExperience(),
+                            attacker.getStats().getExperienceToNextLevel(),
+                            attacker.getStats().getLevel()
+                    );
+
+                    for (PlayerSession session : sessions.values()) {
+                        if (session.isConnected()) {
+                            session.sendRaw(experiencePacket);
+                        }
+                    }
                 }
 
-                int[] push = calculatePush(target.x, target.y, attacker.x, attacker.y,
+                int[] push = calculatePush(target.getX(), target.getY(), attacker.getX(), attacker.getY(),
                         GameProtocol.byteToDirection(packet.getDirection()));
-                target.x = push[0];
-                target.y = push[1];
-                target.lastUpdateTime = System.currentTimeMillis();
+                target.setX(push[0]);
+                target.setY(push[1]);
+                target.setLastUpdateTime(System.currentTimeMillis());
 
                 byte[] pushPacket = encoder.encodePlayerHit(
-                        attacker.id,
-                        target.id,
+                        attacker.getId(),
+                        target.getId(),
                         push[0],
                         push[1]
                 );
 
-                PlayerSession targetSession = sessions.get(target.id);
+                PlayerSession targetSession = sessions.get(target.getId());
                 if (targetSession != null) {
                     try {
                         targetSession.sendRaw(pushPacket);
@@ -368,7 +424,7 @@ public class SocketGameServer {
                 @Override
                 public void run() {
                     try {
-                        if (deadSession.connected) {
+                        if (deadSession.isConnected()) {
                             deadSession.disconnect();
                             sessions.remove(deadPlayerId);
                             playerStates.remove(deadPlayerId);
@@ -430,22 +486,22 @@ public class SocketGameServer {
         List<GamePacket.PlayerData> snapshot = new ArrayList<>();
         for (PlayerState state : playerStates.values()) {
             GamePacket.PlayerData data = new GamePacket.PlayerData();
-            data.setId(state.id);
-            data.setX(state.x);
-            data.setY(state.y);
-            data.setDirection(GameProtocol.directionToByte(state.direction));
-            if (state.isDead) {
+            data.setId(state.getId());
+            data.setX(state.getX());
+            data.setY(state.getY());
+            data.setDirection(GameProtocol.directionToByte(state.getDirection()));
+            if (state.isDead()) {
                 data.setHealth(0);
             } else {
-                data.setHealth(state.stats.getHealth());
+                data.setHealth(state.getStats().getHealth());
             }
-            data.setMaxHealth(state.stats.getMaxHealth());
-            data.setLevel(state.stats.getLevel());
-            data.setDamage(state.stats.getDamage());
-            data.setExperience(state.stats.getExperience());
-            data.setExperienceToNextLevel(state.stats.getExperienceToNextLevel());
-            data.setSpriteNum(state.lastSpriteNum);
-            data.setDead(state.isDead);
+            data.setMaxHealth(state.getStats().getMaxHealth());
+            data.setLevel(state.getStats().getLevel());
+            data.setDamage(state.getStats().getDamage());
+            data.setExperience(state.getStats().getExperience());
+            data.setExperienceToNextLevel(state.getStats().getExperienceToNextLevel());
+            data.setSpriteNum(state.getLastSpriteNum());
+            data.setDead(state.isDead());
             snapshot.add(data);
         }
         byte[] worldData = encoder.encodeWorldState(snapshot);
@@ -458,7 +514,7 @@ public class SocketGameServer {
     }
 
     private void snapshotBroadcastLoop() {
-        while (true) {
+        while (running) {
             try {
                 Thread.sleep(33);
                 for (PlayerState state : playerStates.values()) {
@@ -470,23 +526,20 @@ public class SocketGameServer {
         }
     }
 
-    private static class Rectangle {
-        int x, y, width, height;
-
-        Rectangle(int x, int y, int width, int height) {
-            this.x = x;
-            this.y = y;
-            this.width = width;
-            this.height = height;
+    public void stop() {
+        running = false;
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
 
-        boolean intersects(Rectangle other) {
-            return x < other.x + other.width && x + width > other.x &&
-                    y < other.y + other.height && y + height > other.y;
+        if (threadPool != null) {
+            threadPool.shutdownNow();
         }
-    }
 
-    public static void main(String[] args) {
-        new SocketGameServer().start();
+        System.out.println("Сервер на порту " + PORT + " остановлен");
     }
 }

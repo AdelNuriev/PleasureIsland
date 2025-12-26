@@ -25,6 +25,12 @@ public class GamePacket {
     private int experience;
     private int experienceToNextLevel;
     private byte spriteNum;
+    private int itemId;
+    private String itemType;
+    private int itemX;
+    private int itemY;
+    private int experienceGained;
+    private int totalExperience;
 
     public static class PlayerData {
         private int id;
@@ -149,6 +155,18 @@ public class GamePacket {
     public void setExperienceToNextLevel(int exp) { this.experienceToNextLevel = exp; }
     public byte getSpriteNum() { return spriteNum; }
     public void setSpriteNum(byte spriteNum) { this.spriteNum = spriteNum; }
+    public int getItemId() { return itemId; }
+    public void setItemId(int itemId) { this.itemId = itemId; }
+    public String getItemType() { return itemType; }
+    public void setItemType(String itemType) { this.itemType = itemType; }
+    public int getItemX() { return itemX; }
+    public void setItemX(int itemX) { this.itemX = itemX; }
+    public int getItemY() { return itemY; }
+    public void setItemY(int itemY) { this.itemY = itemY; }
+    public int getExperienceGained() { return experienceGained; }
+    public void setExperienceGained(int experienceGained) { this.experienceGained = experienceGained; }
+    public int getTotalExperience() { return totalExperience; }
+    public void setTotalExperience(int totalExperience) { this.totalExperience = totalExperience; }
 
     public boolean hasFlag(byte flag) {
         return (flags & flag) != 0;
@@ -175,4 +193,7 @@ public class GamePacket {
     public boolean isPlayerLeave() { return type == GameProtocol.TYPE_PLAYER_LEAVE; }
     public boolean isPlayerDamage() { return type == GameProtocol.TYPE_PLAYER_DAMAGE; }
     public boolean isPlayerDeath() { return type == GameProtocol.TYPE_PLAYER_DEATH; }
+    public boolean isItemPickup() { return type == GameProtocol.TYPE_ITEM_PICKUP; }
+    public boolean isItemRemove() { return type == GameProtocol.TYPE_ITEM_REMOVE; }
+    public boolean isPlayerExperience() { return type == GameProtocol.TYPE_PLAYER_EXPERIENCE; }
 }

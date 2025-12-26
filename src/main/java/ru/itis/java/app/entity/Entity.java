@@ -17,6 +17,7 @@ public abstract class Entity {
     protected boolean attacking;
 
     protected Rectangle solidArea;
+    protected int solidAreaDefaultX, solidAreaDefaultY;
     protected boolean collisionOn = false;
 
     protected int spriteCounter = 0;
@@ -66,4 +67,6 @@ public abstract class Entity {
     public void setSolidArea(Rectangle solidArea) { this.solidArea = solidArea; }
     public boolean isCollisionOn() { return collisionOn; }
     public void setCollisionOn(boolean collisionOn) { this.collisionOn = collisionOn; }
+    public int getSolidAreaDefaultX() { return solidAreaDefaultX; }
+    public int getSolidAreaDefaultY() { return solidAreaDefaultY; }
 }
